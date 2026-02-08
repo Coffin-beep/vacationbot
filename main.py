@@ -1,47 +1,62 @@
-import asyncio
 import os
-import logging
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import CommandStart
-from aiogram.utils.keyboard import ReplyKeyboardBuilder
+from aiogram.filters import Command, CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from dotenv import load_dotenv
 
-# Загружаем переменные окружения
 load_dotenv()
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 bot = Bot(token=os.getenv("BOT_TOKEN"))
 dp = Dispatcher()
 
-# Настраиваем логирование, чтобы видеть ошибки в консоли OMV
-logging.basicConfig(level=logging.INFO)
 
-# Функция для создания главного меню
-def main_menu_kb():
-    builder = ReplyKeyboardBuilder()
-    builder.row(types.KeyboardButton(text="📅 Подать заявку на отпуск"))
-    builder.row(
-        types.KeyboardButton(text="📊 Мои отпуска"),
-        types.KeyboardButton(text="❓ Помощь")
-    )
-    return builder.as_markup(resize_keyboard=True)
+# Состояния для админки
+class Feedback(StatesGroup):
+    waiting_for_answer = State()
 
-# Обработка команды /start
-@dp.message(CommandStart())
-async def cmd_start(message: types.Message):
-    # Тот самый текст, который мы утвердили
-    await message.answer(
-        f"Привет, коллега из \"Ньютошки\"! 👋\n"
-        f"Я твой автоматический помощник для планирования отдыха. "
-        f"Готов подобрать лучшие даты?",
-        reply_markup=main_menu_kb()
-    )
 
-# Запуск бота
-async def main():
-    print("Бот Ньютошка запущен и готов к работе!")
-    await dp.start_polling(bot)
+# --- БЛОК ПОЛЬЗОВАТЕЛЯ ---
 
-if __name__ == "__main__":
+@dp.message(F.text == "❓ Помощь")
+async def help_command(message: types.Message):
+    await message.answer("Напишите ваш вопрос ниже, и администратор «Ньютошки» ответит вам в ближайшее время.")
+
+
+# Ловим любое сообщение, которое не является командой (вопрос админу)
+@dp.message(F.text, ~F.text.startswith("/"))
+async def forward_to_admin(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        # Пересылаем сообщение админу
+        await bot.send_message(
+            ADMIN_ID,
+            f"📩 **Новый вопрос!**\nОт: {message.from_user.full_name} (ID: `{message.from_user.id}`)\n\n"
+            f"Текст: {message.text}\n\n"
+            f"Чтобы ответить, введите команду: /reply_{message.from_user.id}"
+        )
+        await message.answer("Ваш вопрос отправлен администрации. Ожидайте ответа! ✨")
+
+
+# --- БЛОК АДМИНИСТРАТОРА ---
+
+@dp.message(Command(re=r"reply_(\d+)"))  # Команда вида /reply_123456
+async def start_reply(message: types.Message, state: FSMContext):
+    if message.from_user.id == ADMIN_ID:
+        user_id = message.text.split("_")[1]
+        await state.update_data(reply_to_user_id=user_id)
+        await message.answer(f"Пишите ответ для пользователя {user_id}:")
+        await state.set_state(Feedback.waiting_for_answer)
+
+
+@dp.message(Feedback.waiting_for_answer)
+async def send_reply_to_user(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    user_id = data.get("reply_to_user_id")
+
     try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("Бот выключен")
+        await bot.send_message(user_id, f"✉️ **Ответ от администрации «Ньютошки»:**\n\n{message.text}")
+        await message.answer("✅ Ответ успешно отправлен!")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка при отправке: {e}")
+
+    await state.clear()
