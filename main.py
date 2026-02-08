@@ -62,3 +62,8 @@ async def send_reply_to_user(message: types.Message, state: FSMContext):
         await message.answer(f"❌ Ошибка при отправке: {e}")
 
     await state.clear()
+
+
+async def main():
+    print("--- БОТ ЗАПУСКАЕТСЯ ---") # Добавь это
+    await dp.start_polling(bot)
