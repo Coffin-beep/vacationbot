@@ -39,13 +39,15 @@ async def forward_to_admin(message: types.Message):
 
 # --- БЛОК АДМИНИСТРАТОРА ---
 
-@dp.message(Command(re=r"reply_(\d+)"))  # Команда вида /reply_123456
+@dp.message(F.text.regexp(r"/reply_(\d+)"))
 async def start_reply(message: types.Message, state: FSMContext):
     if message.from_user.id == ADMIN_ID:
-        user_id = message.text.split("_")[1]
-        await state.update_data(reply_to_user_id=user_id)
-        await message.answer(f"Пишите ответ для пользователя {user_id}:")
-        await state.set_state(Feedback.waiting_for_answer)
+        parts = message.text.split("_")
+        if len(parts) > 1:
+            user_id = parts[1]
+            await state.update_data(reply_to_user_id=user_id)
+            await message.answer(f"Пишите ответ для пользователя {user_id}:")
+            await state.set_state(Feedback.waiting_for_answer)
 
 
 @dp.message(Feedback.waiting_for_answer)
