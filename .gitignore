@@ -9,6 +9,3 @@ env/
 # Кэш Python
 __pycache__/
 *.py[cod]
-
-# База данных (если не хочешь хранить пустую БД в репозитории)
-*.dbgit add .gitignore
