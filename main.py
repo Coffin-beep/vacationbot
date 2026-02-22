@@ -28,6 +28,7 @@ dp = Dispatcher()
 
 # --- СОСТОЯНИЯ (FSM) ---
 class Feedback(StatesGroup):
+    waiting_for_feedback = State()  # Ожидание вопроса от пользователя
     waiting_for_answer = State()  # Админ пишет ответ
 
 
@@ -35,7 +36,10 @@ class Feedback(StatesGroup):
 def main_menu_kb():
     builder = ReplyKeyboardBuilder()
     builder.row(types.KeyboardButton(text="📅 Подать заявку на отпуск"))
-    builder.row(types.KeyboardButton(text="📊 Мои отпуска"))
+    builder.row(
+        types.KeyboardButton(text="📊 Мои отпуска"),
+        types.KeyboardButton(text="❓ Помощь")
+    )
     return builder.as_markup(resize_keyboard=True)
 
 
@@ -45,15 +49,24 @@ def cancel_kb():
     return builder.as_markup(resize_keyboard=True)
 
 
-# --- ОСНОВНОЙ БЛОК ---
+# --- БЛОК ПОЛЬЗОВАТЕЛЯ ---
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()  # Сбрасываем любые состояния при старте
     await message.answer(
-        f"Привет, коллега из «Ньютошки»! 👋\nЯ твой помощник по планированию отпусков.",
+        f"Привет, коллега из «Ньютошки»! 👋\nЯ твой помощник. Чем могу помочь?",
         reply_markup=main_menu_kb()
     )
+
+
+@dp.message(F.text == "❓ Помощь")
+async def help_command(message: types.Message, state: FSMContext):
+    await message.answer(
+        "Напишите ваш вопрос ниже, и администратор ответит вам в ближайшее время.",
+        reply_markup=cancel_kb()
+    )
+    await state.set_state(Feedback.waiting_for_feedback)
 
 
 @dp.message(F.text == "❌ Отмена")
@@ -62,7 +75,23 @@ async def cancel_handler(message: types.Message, state: FSMContext):
     await message.answer("Действие отменено.", reply_markup=main_menu_kb())
 
 
-# --- БЛОК АДМИНИСТРАТОРА (Оставляем для возможности отвечать по ID) ---
+@dp.message(Feedback.waiting_for_feedback, F.text)
+async def forward_to_admin(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await bot.send_message(
+            ADMIN_ID,
+            f"📩 **Новый вопрос!**\n"
+            f"От: {message.from_user.full_name} (ID: `{message.from_user.id}`)\n\n"
+            f"Текст: {message.text}\n\n"
+            f"Для ответа нажмите: /reply_{message.from_user.id}"
+        )
+        await message.answer("Ваш вопрос отправлен! Ожидайте ответа. ✨", reply_markup=main_menu_kb())
+    else:
+        await message.answer("Вы администратор.", reply_markup=main_menu_kb())
+    await state.clear()
+
+
+# --- БЛОК АДМИНИСТРАТОРА ---
 
 @dp.message(F.text.startswith("/reply_"))
 async def start_reply(message: types.Message, state: FSMContext):
@@ -71,7 +100,7 @@ async def start_reply(message: types.Message, state: FSMContext):
         if target_user_id.isdigit():
             await state.update_data(reply_to_user_id=target_user_id)
             await message.answer(
-                f"Введите текст сообщения для пользователя {target_user_id}:",
+                f"Введите текст ответа для пользователя {target_user_id}:",
                 reply_markup=cancel_kb()
             )
             await state.set_state(Feedback.waiting_for_answer)
@@ -83,6 +112,7 @@ async def start_reply(message: types.Message, state: FSMContext):
 
 @dp.message(Feedback.waiting_for_answer, F.text)
 async def send_reply_to_user(message: types.Message, state: FSMContext):
+    # Если админ нажал отмену
     if message.text == "❌ Отмена":
         await state.clear()
         await message.answer("Отправка отменена.", reply_markup=main_menu_kb())
@@ -95,10 +125,10 @@ async def send_reply_to_user(message: types.Message, state: FSMContext):
         try:
             await bot.send_message(
                 int(target_user_id),
-                f"✉️ **Сообщение от администрации «Ньютошки»:**\n\n{message.text}"
+                f"✉️ **Ответ от администрации «Ньютошки»:**\n\n{message.text}"
             )
-            await message.answer("✅ Сообщение отправлено!", reply_markup=main_menu_kb())
-            logging.info(f"Сообщение отправлено пользователю {target_user_id}")
+            await message.answer("✅ Ответ отправлен!", reply_markup=main_menu_kb())
+            logging.info(f"Ответ отправлен пользователю {target_user_id}")
         except Exception as e:
             await message.answer(f"❌ Ошибка отправки: {e}", reply_markup=main_menu_kb())
 
