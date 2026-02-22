@@ -8,13 +8,12 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from dotenv import load_dotenv
 
-# Настройка логирования для отображения в Docker logs
+# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# Загрузка переменных окружения
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 try:
@@ -26,10 +25,12 @@ except (TypeError, ValueError):
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+
 # --- СОСТОЯНИЯ (FSM) ---
 class Feedback(StatesGroup):
-    waiting_for_feedback = State()  # Ожидание вопроса от пользователя
-    waiting_for_answer = State()    # Ожидание текста ответа от админа
+    waiting_for_feedback = State()  # Пользователь пишет вопрос
+    waiting_for_answer = State()  # Админ пишет ответ
+
 
 # --- КЛАВИАТУРЫ ---
 def main_menu_kb():
@@ -41,25 +42,40 @@ def main_menu_kb():
     )
     return builder.as_markup(resize_keyboard=True)
 
+
+def cancel_kb():
+    builder = ReplyKeyboardBuilder()
+    builder.row(types.KeyboardButton(text="❌ Отмена"))
+    return builder.as_markup(resize_keyboard=True)
+
+
 # --- БЛОК ПОЛЬЗОВАТЕЛЯ ---
 
 @dp.message(CommandStart())
-async def cmd_start(message: types.Message):
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()  # Сбрасываем любые состояния при старте
     await message.answer(
-        f"Привет, коллега из «Ньютошки»! 👋\n"
-        f"Я твой автоматический помощник для планирования отдыха.\n"
-        f"Чем могу помочь?",
+        f"Привет, коллега из «Ньютошки»! 👋\nЯ твой помощник. Чем могу помочь?",
         reply_markup=main_menu_kb()
     )
+
 
 @dp.message(F.text == "❓ Помощь")
 async def help_command(message: types.Message, state: FSMContext):
     await message.answer(
-        "Напишите ваш вопрос ниже, и администратор ответит вам в ближайшее время."
+        "Напишите ваш вопрос ниже, и администратор ответит вам в ближайшее время.",
+        reply_markup=cancel_kb()
     )
     await state.set_state(Feedback.waiting_for_feedback)
 
-@dp.message(Feedback.waiting_for_feedback)
+
+@dp.message(F.text == "❌ Отмена")
+async def cancel_handler(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Действие отменено.", reply_markup=main_menu_kb())
+
+
+@dp.message(Feedback.waiting_for_feedback, F.text)
 async def forward_to_admin(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         await bot.send_message(
@@ -67,68 +83,68 @@ async def forward_to_admin(message: types.Message, state: FSMContext):
             f"📩 **Новый вопрос!**\n"
             f"От: {message.from_user.full_name} (ID: `{message.from_user.id}`)\n\n"
             f"Текст: {message.text}\n\n"
-            f"Чтобы ответить, введите: /reply_{message.from_user.id}"
+            f"Для ответа нажмите: /reply_{message.from_user.id}"
         )
-        await message.answer("Ваш вопрос отправлен администрации. Ожидайте ответа! ✨")
+        await message.answer("Ваш вопрос отправлен! Ожидайте ответа. ✨", reply_markup=main_menu_kb())
     else:
-        await message.answer("Вы администратор. Сообщение не переслано самому себе.")
+        await message.answer("Вы администратор.", reply_markup=main_menu_kb())
     await state.clear()
+
 
 # --- БЛОК АДМИНИСТРАТОРА ---
 
-# Используем startswith для надежности
 @dp.message(F.text.startswith("/reply_"))
 async def start_reply(message: types.Message, state: FSMContext):
     if message.from_user.id == ADMIN_ID:
-        try:
-            target_user_id = message.text.replace("/reply_", "").strip()
-            if target_user_id.isdigit():
-                await state.update_data(reply_to_user_id=target_user_id)
-                await message.answer(f"Введите текст ответа для пользователя {target_user_id}:")
-                await state.set_state(Feedback.waiting_for_answer)
-                logging.info(f"Админ начал ответ пользователю {target_user_id}")
-            else:
-                await message.answer("Ошибка: неверный ID пользователя.")
-        except Exception as e:
-            logging.error(f"Ошибка в start_reply: {e}")
+        target_user_id = message.text.replace("/reply_", "").strip()
+        if target_user_id.isdigit():
+            await state.update_data(reply_to_user_id=target_user_id)
+            await message.answer(
+                f"Введите текст ответа для пользователя {target_user_id}:",
+                reply_markup=cancel_kb()
+            )
+            await state.set_state(Feedback.waiting_for_answer)
+        else:
+            await message.answer("Неверный формат ID.")
     else:
-        await message.answer("У вас нет прав администратора.")
+        await message.answer("Доступ запрещен.")
 
-# Ловим сам текст ответа от админа
-@dp.message(Feedback.waiting_for_answer)
+
+@dp.message(Feedback.waiting_for_answer, F.text)
 async def send_reply_to_user(message: types.Message, state: FSMContext):
+    # Если админ нажал отмену
+    if message.text == "❌ Отмена":
+        await state.clear()
+        await message.answer("Отправка отменена.", reply_markup=main_menu_kb())
+        return
+
     data = await state.get_data()
     target_user_id = data.get("reply_to_user_id")
 
-    if not target_user_id:
-        await message.answer("Ошибка: ID пользователя потерян. Попробуйте еще раз через /reply_ID")
-        await state.clear()
-        return
-
-    try:
-        logging.info(f"Отправка ответа от админа пользователю {target_user_id}")
-        await bot.send_message(
-            int(target_user_id),
-            f"✉️ **Ответ от администрации «Ньютошки»:**\n\n{message.text}"
-        )
-        await message.answer("✅ Ответ успешно отправлен!")
-    except Exception as e:
-        await message.answer(f"❌ Ошибка при отправке пользователю: {e}")
-        logging.error(f"Error sending reply: {e}")
+    if target_user_id:
+        try:
+            await bot.send_message(
+                int(target_user_id),
+                f"✉️ **Ответ от администрации «Ньютошки»:**\n\n{message.text}"
+            )
+            await message.answer("✅ Ответ отправлен!", reply_markup=main_menu_kb())
+            logging.info(f"Ответ отправлен пользователю {target_user_id}")
+        except Exception as e:
+            await message.answer(f"❌ Ошибка отправки: {e}", reply_markup=main_menu_kb())
 
     await state.clear()
+
 
 # --- ЗАПУСК ---
 
 async def main():
-    logging.info("--- БОТ «НЬЮТОШКА» ЗАПУСКАЕТСЯ ---")
+    logging.info("--- БОТ ЗАПУЩЕН ---")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        logging.info("Бот остановлен вручную.")
-    except Exception as e:
-        logging.critical(f"Критическая ошибка при запуске: {e}")
+        pass
